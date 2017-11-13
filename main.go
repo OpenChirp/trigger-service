@@ -1,13 +1,19 @@
 // Craig Hesling
 // November 12, 2017
 //
-// This is OpenChirp service that makes an http request when a certain condition is met.
+// This is an OpenChirp service that makes an http request when a certain conditions are met.
 package main
 
 import (
+	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
+
+	"github.com/Knetic/govaluate"
 
 	"github.com/openchirp/framework"
 	log "github.com/sirupsen/logrus"
@@ -16,6 +22,13 @@ import (
 
 const (
 	version string = "1.0"
+)
+
+const (
+	configExpression = "expr"
+	configValue      = "value"
+	configMethod     = "method"
+	configUri        = "uri"
 )
 
 const (
@@ -28,38 +41,116 @@ const (
 	runningStatus = true
 )
 
-const (
-	MsgType1 int = 1
-)
-
 type Device struct {
+	expr   *govaluate.EvaluableExpression
+	value  *govaluate.EvaluableExpression
+	uri    string
+	values map[string]interface{}
 }
 
 func NewDevice() framework.Device {
 	d := &Device{}
+	d.ResetValues()
 	return framework.Device(d)
 }
 
-func (d *Device) ProcessLink(ctrl *framework.DeviceControl) {
+func (d *Device) ResetValues() {
+	d.values = make(map[string]interface{})
+}
+
+func (d *Device) ProcessLink(ctrl *framework.DeviceControl) string {
 	logitem := log.WithField("deviceid", ctrl.Id())
 	logitem.Debug("Linking with config:", ctrl.Config())
-	ctrl.Subscribe("transducer/in", MsgType1)
+
+	uri := ctrl.Config()[configUri]
+	exprStr := ctrl.Config()[configExpression]
+	valueStr := ctrl.Config()[configValue]
+
+	expr, err := govaluate.NewEvaluableExpression(exprStr)
+	if err != nil {
+		logitem.Warnf("Error parsing expr: %v", err)
+		return fmt.Sprint(err)
+	}
+	value, err := govaluate.NewEvaluableExpression(valueStr)
+	if err != nil {
+		logitem.Warnf("Error parsing value: %v", err)
+		return fmt.Sprint(err)
+	}
+
+	d.uri = uri
+	d.expr = expr
+	d.value = value
+
+	for _, v := range d.expr.Vars() {
+		subtopic := "transducer/" + v
+		ctrl.Subscribe(subtopic, v)
+	}
+
+	// for _, v := range d.value.Vars() {
+	// 	subtopic := "transducer/" + v
+	// 	ctrl.Subscribe(subtopic, -1)
+	// }
+
+	return "Success"
 }
 func (d *Device) ProcessUnlink(ctrl *framework.DeviceControl) {
 	logitem := log.WithField("deviceid", ctrl.Id())
 	logitem.Debug("Unlinked:")
 }
-func (d *Device) ProcessConfigChange(ctrl *framework.DeviceControl, cchanges, coriginal map[string]string) bool {
+func (d *Device) ProcessConfigChange(ctrl *framework.DeviceControl, cchanges, coriginal map[string]string) (string, bool) {
 	logitem := log.WithField("deviceid", ctrl.Id())
 	logitem.Debug("Processing Config Change:", cchanges)
-	return false
+	return "", false
 }
 func (d *Device) ProcessMessage(ctrl *framework.DeviceControl, msg framework.Message) {
 	logitem := log.WithField("deviceid", ctrl.Id())
 	logitem.Debugf("Processing Message: %v: [ % #x ]", msg.Key(), msg.Payload())
-	if msg.Key().(int) == MsgType1 {
-		logitem.Debug("Publishing back to out")
-		ctrl.Publish("transducer/out", msg.Payload())
+
+	value, err := strconv.ParseFloat(string(msg.Payload()), 64)
+	if err != nil {
+		log.Warnf("Failed to parse a float64 from %v: %v", string(msg.Payload()), err)
+		ctrl.Publish("transducer/err", fmt.Sprint(err))
+		return
+	}
+	d.values[msg.Key().(string)] = value
+
+	exprResult, err := d.expr.Evaluate(d.values)
+	if err != nil {
+		log.Warnf("Failed to evaluate %v with %v", d.value, d.values)
+		ctrl.Publish("transducer/err", fmt.Sprint(err))
+		return
+	}
+
+	if result, ok := exprResult.(bool); result && ok {
+		valueResult, err := d.value.Evaluate(d.values)
+		if err != nil {
+			log.Warnf("Failed to evaluate %v with %v", d.value, d.values)
+			ctrl.Publish("transducer/err", fmt.Sprint(err))
+			return
+		}
+		log.Debugf("Evaluated %v with %v = %v", d.value, d.values, valueResult)
+		ctrl.Publish("transducer/out", fmt.Sprint(valueResult))
+		// send POST request
+		if len(d.uri) > 0 {
+			log.Debug("Sending POST request")
+			req, err := http.NewRequest("POST", d.uri, strings.NewReader(fmt.Sprint(valueResult)))
+			if err != nil {
+				log.Warnf("Failed to send POST to %v with value %v", d.uri, valueResult)
+				ctrl.Publish("transducer/err", fmt.Sprint(err))
+				return
+			}
+			c := &http.Client{}
+			resp, err := c.Do(req)
+			if err != nil {
+				log.Warnf("Failed to send POST to %v with value %v", d.uri, valueResult)
+				ctrl.Publish("transducer/err", fmt.Sprint(err))
+				return
+			}
+			defer resp.Body.Close()
+
+		}
+	} else {
+		log.Debugf("Did not evaluate value because result=%v and ok=%v", result, ok)
 	}
 }
 
