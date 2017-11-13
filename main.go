@@ -1,8 +1,7 @@
 // Craig Hesling
-// September 9, 2017
+// November 12, 2017
 //
-// This is an example OpenChirp service. It sets up arguments and the main
-// runtime event loop to process new device service links
+// This is OpenChirp service that makes an http request when a certain condition is met.
 package main
 
 import (
@@ -29,6 +28,41 @@ const (
 	runningStatus = true
 )
 
+const (
+	MsgType1 int = 1
+)
+
+type Device struct {
+}
+
+func NewDevice() framework.Device {
+	d := &Device{}
+	return framework.Device(d)
+}
+
+func (d *Device) ProcessLink(ctrl *framework.DeviceControl) {
+	logitem := log.WithField("deviceid", ctrl.Id())
+	logitem.Debug("Linking with config:", ctrl.Config())
+	ctrl.Subscribe("transducer/in", MsgType1)
+}
+func (d *Device) ProcessUnlink(ctrl *framework.DeviceControl) {
+	logitem := log.WithField("deviceid", ctrl.Id())
+	logitem.Debug("Unlinked:")
+}
+func (d *Device) ProcessConfigChange(ctrl *framework.DeviceControl, cchanges, coriginal map[string]string) bool {
+	logitem := log.WithField("deviceid", ctrl.Id())
+	logitem.Debug("Processing Config Change:", cchanges)
+	return false
+}
+func (d *Device) ProcessMessage(ctrl *framework.DeviceControl, msg framework.Message) {
+	logitem := log.WithField("deviceid", ctrl.Id())
+	logitem.Debugf("Processing Message: %v: [ % #x ]", msg.Key(), msg.Payload())
+	if msg.Key().(int) == MsgType1 {
+		logitem.Debug("Publishing back to out")
+		ctrl.Publish("transducer/out", msg.Payload())
+	}
+}
+
 func run(ctx *cli.Context) error {
 	/* Set logging level */
 	log.SetLevel(log.Level(uint32(ctx.Int("log-level"))))
@@ -36,12 +70,13 @@ func run(ctx *cli.Context) error {
 	log.Info("Starting Example Service")
 
 	/* Start framework service client */
-	c, err := framework.StartServiceClientStatus(
+	c, err := framework.StartServiceClientManaged(
 		ctx.String("framework-server"),
 		ctx.String("mqtt-server"),
 		ctx.String("service-id"),
 		ctx.String("service-token"),
-		"Unexpected disconnect!")
+		"Unexpected disconnect!",
+		NewDevice)
 	if err != nil {
 		log.Error("Failed to StartServiceClient: ", err)
 		return cli.NewExitError(nil, 1)
@@ -57,17 +92,7 @@ func run(ctx *cli.Context) error {
 	}
 	log.Info("Published Service Status")
 
-	/* Start service main device updates stream */
-	log.Info("Starting Device Updates Stream")
-	updates, err := c.StartDeviceUpdatesSimple()
-	if err != nil {
-		log.Error("Failed to start device updates stream: ", err)
-		return cli.NewExitError(nil, 1)
-	}
-	defer c.StopDeviceUpdates()
-
 	/* Setup signal channel */
-	log.Info("Processing device updates")
 	signals := make(chan os.Signal)
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 
@@ -81,32 +106,6 @@ func run(ctx *cli.Context) error {
 
 	for {
 		select {
-		case update := <-updates:
-			/* If runningStatus is set, post a service status as an alive msg */
-			if runningStatus {
-				err = c.SetStatus("Running")
-				if err != nil {
-					log.Error("Failed to publish service status: ", err)
-					return cli.NewExitError(nil, 1)
-				}
-				log.Info("Published Service Status")
-			}
-
-			logitem := log.WithFields(
-				log.Fields{"type": update.Type, "deviceid": update.Id},
-			)
-
-			switch update.Type {
-			case framework.DeviceUpdateTypeRem:
-				logitem.Info("Removing device with id ", update.Id, " and config ", update.Config)
-			case framework.DeviceUpdateTypeUpd:
-				logitem.Info("Removing device for update with id", update.Id, " and config ", update.Config)
-				fallthrough
-			case framework.DeviceUpdateTypeAdd:
-				logitem.Info("Adding device")
-				c.SetDeviceStatus(update.Id, "Added device with id ", update.Id, " and config ", update.Config)
-				// devTopic := "openchirp/devices/" + update.Id + "/transducer"
-			}
 		case sig := <-signals:
 			log.WithField("signal", sig).Info("Received signal")
 			goto cleanup
