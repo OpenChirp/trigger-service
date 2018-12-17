@@ -37,15 +37,16 @@
   revision = "b729f2633dfe35f4d1d8a32385f6685610ce1cb5"
 
 [[projects]]
-  digest = "1:c5b8c1ad938bbcb8dfc2797425c9b9b74b86e7fbd8e7b4d9284ce98748364950"
+  digest = "1:62d5b2ef1c6581f97c3ee6210ce5a8da196077c5be04175c02b539ecc7f0f406"
   name = "github.com/openchirp/framework"
   packages = [
     ".",
+    "pubsub",
     "rest",
   ]
   pruneopts = "UT"
-  revision = "59b32f17b56d1d5a6f945e2b162f86337eda2cb8"
-  version = "v1.0"
+  revision = "cdaad003029612e522530bafc723a71634ee7d14"
+  version = "v1.1"
 
 [[projects]]
   digest = "1:dc2d85c13ac22c22a1f3170a41a8e1b897fa05134aaf533f16df44f66a25b4a1"
